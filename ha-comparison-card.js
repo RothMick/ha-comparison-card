@@ -1,11 +1,11 @@
 /**
- * ha-comparison-card v0.1.0
+ * ha-comparison-card v0.1.1
  * Compares a date range of this year with the same range of previous years:
  * stacked bars from long-term statistics, previous years as offset ghost bars.
  * No dependencies. Details: README.md
  */
 
-const CARD_VERSION = '0.1.0';
+const CARD_VERSION = '0.1.1';
 const GROUPS = ['hour', 'day', 'month'];
 const STAT_TYPES = ['change', 'mean', 'min', 'max'];
 const MAX_YEARS_BACK = 5;
@@ -176,8 +176,8 @@ function normalizeConfig(raw) {
 // ---------- cycles ----------
 
 // Cycle 0 is the latest range that has already begun; cycle k is the same range k years earlier.
-// `until` is the last day that counts (lastDay at most: yesterday, or today unless the end is empty);
-// comparisons stop at the same month-day.
+// `until` is the last day that counts: in the current year lastDay at most (yesterday, or today unless the
+// end is empty), in previous years their last day. Without a fixed end that is the month-day of lastDay.
 function buildCycles(cfg, lastDay) {
   const startMd = cfg.start;
   let s0 = onYear(lastDay.y, startMd);
@@ -224,12 +224,11 @@ const aggValue = (a, type) => {
   return a.sum;
 };
 
-// Turns the raw rows of every cycle into bucket values, like-for-like totals and coverage.
+// Turns the raw rows of every cycle into bucket values, totals and coverage. Each year counts its own
+// range up to `until`: the current year up to today or yesterday, previous years up to their last day.
 function processData(cfg, cycles, results, zone, type) {
   const group = cfg.group_by;
   const hourly = group === 'hour';
-  const base = cycles[0];
-  const cutPos = dayPos(base.until, base.start.y);
   const bucketOf = (dt, h, cy) => {
     if (group === 'month') return (dt.y - cy.start.y) * 12 + dt.m - 1;
     const pos = dayPos(dt, cy.start.y);
@@ -239,7 +238,7 @@ function processData(cfg, cycles, results, zone, type) {
   const slotMap = new Map();
   for (const cy of cycles) {
     cy.expected = new Map();
-    cy.expectedCut = 0;
+    cy.expectedDays = 0;
     const n = daysBetween(cy.start, cy.end);
     for (let i = 0; i <= n; i++) {
       const dt = addDays(cy.start, i);
@@ -253,7 +252,7 @@ function processData(cfg, cycles, results, zone, type) {
       const key = bucketOf(dt, 0, cy);
       if (!cy.expected.has(key)) cy.expected.set(key, new Set());
       cy.expected.get(key).add(pos);
-      if (pos <= cutPos) cy.expectedCut++;
+      cy.expectedDays++;
     }
   }
   const slots = [...slotMap.values()].sort((a, b) => a.key - b.key);
@@ -286,7 +285,7 @@ function processData(cfg, cycles, results, zone, type) {
       for (const row of rows.values()) {
         if (!buckets.has(row.b)) buckets.set(row.b, newAgg());
         addAgg(buckets.get(row.b), row.v);
-        if (row.pos <= cutPos) addAgg(total, row.v);
+        addAgg(total, row.v);
         if (!seen.has(row.dayKey)) seen.set(row.dayKey, new Set());
         seen.get(row.dayKey).add(row.pos);
       }
@@ -301,10 +300,10 @@ function processData(cfg, cycles, results, zone, type) {
       const have = seen.get(key);
       const n = have ? [...days].filter(p => have.has(p)).length : 0;
       if (n && n < days.size) cy.partial.add(key);
-      if (have) covered += [...days].filter(p => p <= cutPos && have.has(p)).length;
+      covered += n;
     }
     cy.coveredDays = covered;
-    cy.complete = covered >= cy.expectedCut;
+    cy.complete = covered >= cy.expectedDays;
   });
 
   // For hourly groups the day-level partial marker applies to all hours of that day.
@@ -318,7 +317,7 @@ function processData(cfg, cycles, results, zone, type) {
     for (const cy of cycles) cy.partialSlots = cy.partial;
   }
 
-  return { cycles, slots, cutPos, type };
+  return { cycles, slots, type };
 }
 
 // ---------- formatting ----------
@@ -995,7 +994,7 @@ class HaComparisonCard extends HTMLElement {
     const d = this._data;
     const vis = this._visible();
     const notes = vis.filter(cy => !cy.complete)
-      .map(cy => `* ${cy.label}: data for ${cy.coveredDays} of ${cy.expectedCut} days`);
+      .map(cy => `* ${cy.label}: data for ${cy.coveredDays} of ${cy.expectedDays} days`);
     if (d.missing.length) notes.push(`No long-term statistics for ${d.missing.join(', ')}`);
     this._els.note.textContent = notes.join(' \u00b7 ');
   }

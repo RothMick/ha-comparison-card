@@ -23,8 +23,9 @@ One JavaScript file, no dependencies, with a visual editor.
 
 - One bar per **hour, day or month** over any date range, also across New Year (e.g. a heating
   season from October to March).
-- **Like-for-like:** previous years are cut at the same calendar day. Leap days only count where
-  they exist.
+- **Every year over the same range:** calendar days line up across years. With a rolling end
+  (yesterday or today) previous years stop at the same calendar day; with a fixed last day every
+  previous year counts its whole range. Leap days only count where they exist.
 - **Several statistics per series** are summed up, e.g. three inverters as one "Solar" series.
   Statistics are used directly, so a replaced or deleted device keeps its history.
 - Up to **five previous years**, opacity per year. Chips in the card show or hide single years.
@@ -85,12 +86,15 @@ The order of the series is the stacking order from the zero line and the order o
 |---|---|---|
 | empty / `yesterday` | first day … yesterday, moves on every day | not included (whole days only) |
 | `today` | first day … today, moves on every day | included, refreshed every 10 minutes |
-| `MM-DD` | fixed, e.g. `01-01` … `12-31` | included while the range lasts; previous years are drawn over the whole range |
+| `MM-DD` | fixed, e.g. `01-01` … `12-31` | included while the range lasts |
 
 - A last day before the first day spans the turn of the year (`start: "10-01"`, `end: "03-31"`).
 - The current range is the latest one that has begun. On 1 January a range starting `01-01`
   shows the new year.
-- Previous years are always compared up to the same calendar day.
+- The value table sums every year over its own range: the current year up to yesterday or today,
+  previous years up to their last day. With a rolling end that is the same calendar day as today;
+  with a fixed last day (e.g. `12-31`) it is the whole range, so the table shows how much of the
+  previous years has been reached so far.
 
 ## Writing templates for calculated rows
 
@@ -99,7 +103,7 @@ and every series is available as a variable holding its **total for that year**:
 
 - the template variable of each series, shown in the editor next to the series (e.g. `{{ grid }}`)
 - `series['grid']` – the same values as a dict
-- `days` – number of days compared, `year`, `label` (e.g. `2025` or `2025/26`), `current` (true
+- `days` – number of days summed up, `year`, `label` (e.g. `2025` or `2025/26`), `current` (true
   for the current year)
 
 Examples for series named *Grid*, *Solar* and *Feed-in* (variables `grid`, `solar`, `feed_in`):
@@ -156,7 +160,7 @@ headline: Solar
 ```
 
 Rain per month for the whole year with two previous years; the current month and today are
-included, previous years are drawn up to December (second screenshot):
+included, previous years are drawn and summed up to December (second screenshot):
 
 ```yaml
 type: custom:ha-comparison-card
@@ -236,6 +240,7 @@ fake recorder, rendering, templates and the editor in jsdom.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.1.1 | 2026-09-28 | Fixed last day: the value table sums previous years over their whole range instead of stopping at today's calendar day |
 | 0.1.0 | 2026-09-28 | First version |
 
 ## License
