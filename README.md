@@ -12,6 +12,13 @@ previous years.
 
 One JavaScript file, no dependencies, with a visual editor.
 
+| Light | Dark |
+|---|---|
+| ![Energy, light theme](images/energy-light.png) | ![Energy, dark theme](images/energy-dark.png) |
+| ![Rain, light theme](images/rain-light.png) | ![Rain, dark theme](images/rain-dark.png) |
+
+*Screenshots with invented data. The configurations are the first two [examples](#examples).*
+
 ## Features
 
 - One bar per **hour, day or month** over any date range, also across New Year (e.g. a heating
@@ -120,11 +127,13 @@ Tips:
 
 ## Examples
 
-Energy with three inverters, feed-in below the zero line and a calculated consumption row:
+Energy up to today with two previous years: three inverters as one series, feed-in below the zero
+line and the savings from the solar power used at home as a calculated row (first screenshot):
 
 ```yaml
 type: custom:ha-comparison-card
 title: Energy
+end: today
 compare_years: [1, 2]
 series:
   - name: Solar
@@ -138,25 +147,27 @@ series:
     color: "#8353d1"
     below_zero: true
 rows:
-  - name: Consumption
-    icon: mdi:home-lightning-bolt
-    template: "{{ grid + solar - feed_in }}"
-headline: Consumption
+  - name: Savings
+    icon: mdi:cash-100
+    template: "{{ (solar - feed_in) * 0.34 }}"
+    unit: €
+    decimals: 0
+headline: Solar
 ```
 
-Rain per month for the whole year, including today:
+Rain per month for the whole year with two previous years; the current month and today are
+included, previous years are drawn up to December (second screenshot):
 
 ```yaml
 type: custom:ha-comparison-card
 title: Rain
 end: "12-31"
+compare_years: [1, 2]
 series:
   - name: Rain
     statistics: [sensor.weather_station_total_rain]
     color: "#0381F9"
 headline: Rain
-ghost_opacity:
-  1: 50
 ```
 
 Heating season per month, three seasons back:
