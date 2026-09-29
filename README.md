@@ -28,6 +28,8 @@ One JavaScript file, no dependencies, with a visual editor.
   previous year counts its whole range. Leap days only count where they exist.
 - **Several statistics per series** are summed up, e.g. three inverters as one "Solar" series.
   Statistics are used directly, so a replaced or deleted device keeps its history.
+- **Value templates** turn a series into a formula of other series, e.g. solar used at home =
+  production minus feed-in. They are evaluated in the browser and cost Home Assistant nothing.
 - Up to **five previous years**, opacity per year. Chips in the card show or hide single years.
 - **Missing data** is detected per day. Years with gaps are marked with `*` and get no percentage.
 - Tooltip per bar, theme colors, number and date format of your Home Assistant language.
@@ -66,6 +68,7 @@ The order of the series is the stacking order from the zero line and the order o
 |---|---|
 | `name` | Label in the table and tooltip |
 | `statistics` | One or more statistic IDs (entity IDs or external statistics); their values are summed up |
+| `template` | Value template instead of the plain sum, e.g. `{{ solar - feed_in }}` (see [Value templates](#value-templates-for-series)) |
 | `id` | Template variable name. Default: derived from the name (`Grid import` → `grid_import`; `ä` → `ae`, `é` → `e`) |
 | `color` | Any CSS color; default from a fixed palette |
 | `below_zero` | Draw this series below the zero line, e.g. feed-in. Display only, nothing is subtracted |
@@ -95,6 +98,36 @@ The order of the series is the stacking order from the zero line and the order o
   previous years up to their last day. With a rolling end that is the same calendar day as today;
   with a fixed last day (e.g. `12-31`) it is the whole range, so the table shows how much of the
   previous years has been reached so far.
+
+## Value templates for series
+
+By default a series is the sum of its statistics. With `template` its value is a formula instead,
+calculated for every day (or hour) and year, before the days are added up to bars and totals:
+
+```yaml
+series:
+  - name: Solar used at home
+    statistics: [sensor.inverter_1_energy, sensor.inverter_2_energy]
+    template: "{{ solar_used_at_home - feed_in }}"
+  - name: Feed-in
+    statistics: [sensor.grid_export_energy]
+    below_zero: true
+```
+
+- Inside a value template every series stands for the **sum of its statistics** on that day,
+  under its template variable. A series may use its own sum, as above, or only other series and
+  have no statistics at all.
+- Everywhere else – bars, value table, headline and calculated rows – a series stands for its
+  **displayed value**, i.e. the template result.
+- A series without a value on a day counts as `0` for meters. For `mean`, `min` and `max` the day
+  is left out.
+- Value templates run in the browser, because a bar chart needs hundreds of values and Home
+  Assistant would have to render each one. They understand the expression part of Jinja2:
+  numbers, the series variables and `series['name']`, `+ - * / // % **`, comparisons,
+  `and or not`, `a if condition else b`, lists, and `max min abs round float int sum default`
+  as functions or filters (`max(solar, 0)`, `[a, b] | max`, `x | round(1)`).
+- Not supported: `states()` and other Home Assistant functions, `{% %}` blocks. An error is shown
+  below the card, e.g. `Solar: Unknown variable feed`.
 
 ## Writing templates for calculated rows
 
@@ -174,6 +207,39 @@ series:
 headline: Rain
 ```
 
+Energy with the solar power used at home instead of the production. Solar used at home plus grid
+is the consumption, so the bars above the zero line show it directly and the savings are simply
+the solar value times the price:
+
+```yaml
+type: custom:ha-comparison-card
+title: Energy
+end: today
+compare_years: [1, 2]
+series:
+  - name: Solar
+    statistics: [sensor.inverter_1_energy, sensor.inverter_2_energy, sensor.inverter_3_energy]
+    template: "{{ solar - feed_in }}"
+    color: "#ff9800"
+  - name: Grid
+    statistics: [sensor.grid_import_energy]
+    color: "#488fc2"
+  - name: Feed-in
+    statistics: [sensor.grid_export_energy]
+    color: "#8353d1"
+    below_zero: true
+rows:
+  - name: Consumption
+    icon: mdi:home-lightning-bolt
+    template: "{{ solar + grid }}"
+  - name: Savings
+    icon: mdi:cash-100
+    template: "{{ solar * 0.34 }}"
+    unit: €
+    decimals: 0
+headline: Solar
+```
+
 Heating season per month, three seasons back:
 
 ```yaml
@@ -210,8 +276,8 @@ rows:
 
 - **General:** title, first and last day, one bar per hour/day/month, statistic type.
 - **Compare with:** one line per previous year – switch plus opacity in percent.
-- **Bars:** one collapsible box per series (name, statistics, template variable, below zero,
-  color), move up/down, remove.
+- **Bars:** one collapsible box per series (name, statistics, value template, template variable,
+  below zero, color), move up/down, remove.
 - **Value table:** switch for the table and the calculated rows (name, icon, template, unit,
   decimals).
 - **Display** (collapsible): chart height, headline value, unit, decimals.
@@ -240,6 +306,7 @@ fake recorder, rendering, templates and the editor in jsdom.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.2.0 | 2026-09-29 | Value templates for series: a series can be a formula of other series, e.g. solar used at home = production minus feed-in; evaluated in the browser |
 | 0.1.1 | 2026-09-28 | Fixed last day: the value table sums previous years over their whole range instead of stopping at today's calendar day |
 | 0.1.0 | 2026-09-28 | First version |
 

@@ -1,11 +1,11 @@
 /**
- * ha-comparison-card v0.1.1
+ * ha-comparison-card v0.2.0
  * Compares a date range of this year with the same range of previous years:
  * stacked bars from long-term statistics, previous years as offset ghost bars.
  * No dependencies. Details: README.md
  */
 
-const CARD_VERSION = '0.1.1';
+const CARD_VERSION = '0.2.0';
 const GROUPS = ['hour', 'day', 'month'];
 const STAT_TYPES = ['change', 'mean', 'min', 'max'];
 const MAX_YEARS_BACK = 5;
@@ -137,6 +137,7 @@ function normalizeConfig(raw) {
       id,
       name: String(s?.name || id),
       statistics: [].concat(s?.statistics ?? s?.statistic ?? []).filter(Boolean).map(String),
+      template: String(s?.template ?? '').trim() ? String(s.template) : null,
       color: s?.color ? String(s.color) : null,
       below_zero: s?.below_zero === true,
     };
@@ -171,6 +172,268 @@ function normalizeConfig(raw) {
     show_table: raw.show_table !== false,
     ghost_opacity: parseOpacities(raw.ghost_opacity),
   };
+}
+
+// ---------- series templates ----------
+
+// Series templates run in the browser for every day (or hour) and year, so they cost Home Assistant
+// nothing. They understand the expression part of Jinja2 (details in the README).
+
+const TPL_TOKEN = /\s*(?:(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+)|([A-Za-z_]\w*)|('[^']*'|"[^"]*")|(\*\*|\/\/|==|!=|<=|>=|[-+*/%()<>,|[\].]))/y;
+const TPL_WORDS = new Set(['if', 'else', 'and', 'or', 'not']);
+const TPL_CONST = { none: null, None: null, true: true, True: true, false: false, False: false };
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+const tplShow = v => (v == null ? 'none' : typeof v === 'string' ? `'${v}'` : Array.isArray(v) ? 'a list' : String(v));
+const tplNum = v => {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return Number(v);
+  throw new Error(`${tplShow(v)} is not a number`);
+};
+const tplToNumber = (v, fallback) => {
+  const n = typeof v === 'number' || typeof v === 'boolean' ? Number(v) : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+  if (Number.isFinite(n)) return n;
+  if (fallback !== undefined) return fallback;
+  throw new Error(`${tplShow(v)} is not a number`);
+};
+const tplList = args => (args.length === 1 && Array.isArray(args[0]) ? args[0] : args).map(tplNum);
+const tplExtreme = (name, pick) => (...args) => {
+  const l = tplList(args);
+  if (!l.length) throw new Error(`${name}() of an empty list`);
+  return pick(...l);
+};
+// Usable as function and as filter: max(a, b), [a, b] | max, x | round(1).
+const TPL_FUNCS = {
+  float: (v, fallback) => tplToNumber(v, fallback),
+  int: (v, fallback) => Math.trunc(tplToNumber(v, fallback)),
+  abs: v => Math.abs(tplNum(v)),
+  round: (v, p = 0) => {
+    const f = 10 ** tplNum(p);
+    const x = tplNum(v);
+    return Math.sign(x) * Math.round(Math.abs(x) * f) / f;
+  },
+  max: tplExtreme('max', Math.max),
+  min: tplExtreme('min', Math.min),
+  sum: (...args) => tplList(args).reduce((a, b) => a + b, 0),
+  default: (v, fallback = '') => (v == null ? fallback : v),
+};
+TPL_FUNCS.d = TPL_FUNCS.default;
+
+const tplTruthy = v => (Array.isArray(v) ? v.length > 0 : !!v);
+const tplItem = (o, k) => {
+  if (o != null && typeof o === 'object' && own(o, k)) return o[k];
+  throw new Error(`${tplShow(o)} has no item ${tplShow(k)}`);
+};
+const tplArith = (op, a, b) => {
+  const x = tplNum(a);
+  const y = tplNum(b);
+  if (op === '+') return x + y;
+  if (op === '-') return x - y;
+  if (op === '*') return x * y;
+  if (op === '**') return x ** y;
+  if (y === 0) throw new Error('Division by zero');
+  return op === '/' ? x / y : op === '//' ? Math.floor(x / y) : x - y * Math.floor(x / y);
+};
+const tplCompare = (op, a, b) => {
+  if (op === '==') return a === b;
+  if (op === '!=') return a !== b;
+  const x = tplNum(a);
+  const y = tplNum(b);
+  return op === '<' ? x < y : op === '<=' ? x <= y : op === '>' ? x > y : x >= y;
+};
+
+// Compiles "{{ expression }}" into a function of the variables. `names` are the variables it reads.
+function compileTemplate(src) {
+  const m = /^\s*\{\{-?([\s\S]*?)-?\}\}\s*$/.exec(String(src));
+  if (!m || /\{\{|\}\}|\{%/.test(m[1])) throw new Error('Write the value as one {{ ... }} expression');
+  const text = m[1];
+  const toks = [];
+  TPL_TOKEN.lastIndex = 0;
+  while (text.slice(TPL_TOKEN.lastIndex).trim()) {
+    const at = TPL_TOKEN.lastIndex;
+    const t = TPL_TOKEN.exec(text);
+    if (!t) throw new Error(`Unexpected "${text.slice(at).trim()[0]}"`);
+    toks.push(t[1] != null ? { k: 'num', v: Number(t[1]) } : t[2] != null ? { k: 'name', v: t[2] }
+      : t[3] != null ? { k: 'str', v: t[3].slice(1, -1) } : { k: 'op', v: t[4] });
+  }
+
+  let i = 0;
+  const names = new Set();
+  const is = (k, v) => toks[i]?.k === k && toks[i].v === v;
+  const isOp = (...ops) => toks[i]?.k === 'op' && ops.includes(toks[i].v);
+  const take = v => {
+    if (!is('op', v)) throw new Error(`Expected "${v}"${toks[i] ? ` before "${toks[i].v}"` : ' at the end'}`);
+    i++;
+  };
+  const list = end => {
+    const out = [];
+    while (!is('op', end)) {
+      out.push(expr());
+      if (!is('op', ',')) break;
+      i++;
+    }
+    take(end);
+    return out;
+  };
+  const primary = () => {
+    const t = toks[i++];
+    if (!t) throw new Error('The expression ends too early');
+    if (t.k === 'num' || t.k === 'str') return () => t.v;
+    if (t.k === 'op' && t.v === '(') {
+      const e = expr();
+      take(')');
+      return e;
+    }
+    if (t.k === 'op' && t.v === '[') {
+      const items = list(']');
+      return env => items.map(f => f(env));
+    }
+    if (t.k === 'name' && !TPL_WORDS.has(t.v)) {
+      if (own(TPL_CONST, t.v)) return () => TPL_CONST[t.v];
+      if (is('op', '(')) {
+        if (!own(TPL_FUNCS, t.v)) throw new Error(`Unknown function ${t.v}()`);
+        const fn = TPL_FUNCS[t.v];
+        i++;
+        const args = list(')');
+        return env => fn(...args.map(f => f(env)));
+      }
+      names.add(t.v);
+      return env => {
+        if (!own(env, t.v)) throw new Error(`Unknown variable ${t.v}`);
+        return env[t.v];
+      };
+    }
+    throw new Error(`Unexpected "${t.v}"`);
+  };
+  const postfix = () => {
+    let a = primary();
+    for (;;) {
+      const o = a;
+      if (is('op', '[')) {
+        i++;
+        const key = expr();
+        take(']');
+        a = env => tplItem(o(env), key(env));
+      } else if (is('op', '.') && toks[i + 1]?.k === 'name') {
+        const key = toks[i + 1].v;
+        i += 2;
+        a = env => tplItem(o(env), key);
+      } else return a;
+    }
+  };
+  // As in Jinja2, filters bind to the operand including its sign: -x | abs is abs(-x).
+  const unary = (withFilters = true) => {
+    let a;
+    if (isOp('-', '+')) {
+      const neg = toks[i++].v === '-';
+      const inner = unary(false);
+      a = neg ? env => -tplNum(inner(env)) : env => tplNum(inner(env));
+    } else a = postfix();
+    while (withFilters && is('op', '|')) {
+      i++;
+      const t = toks[i++];
+      if (t?.k !== 'name' || !own(TPL_FUNCS, t.v)) throw new Error(`Unknown filter ${t ? t.v : ''}`.trim());
+      const fn = TPL_FUNCS[t.v];
+      let args = [];
+      if (is('op', '(')) {
+        i++;
+        args = list(')');
+      }
+      const o = a;
+      a = env => fn(o(env), ...args.map(f => f(env)));
+    }
+    return a;
+  };
+  const binary = (next, ops, apply) => () => {
+    let a = next();
+    while (isOp(...ops)) {
+      const op = toks[i++].v;
+      const l = a;
+      const r = next();
+      a = env => apply(op, l(env), r(env));
+    }
+    return a;
+  };
+  const pow = binary(unary, ['**'], tplArith);
+  const mul = binary(pow, ['*', '/', '//', '%'], tplArith);
+  const add = binary(mul, ['+', '-'], tplArith);
+  const cmp = binary(add, ['==', '!=', '<', '<=', '>', '>='], tplCompare);
+  const not = () => {
+    if (!is('name', 'not')) return cmp();
+    i++;
+    const a = not();
+    return env => !tplTruthy(a(env));
+  };
+  const logic = (next, word, stop) => () => {
+    let a = next();
+    while (is('name', word)) {
+      i++;
+      const l = a;
+      const r = next();
+      a = env => {
+        const v = l(env);
+        return tplTruthy(v) === stop ? v : r(env);
+      };
+    }
+    return a;
+  };
+  const and = logic(not, 'and', false);
+  const or = logic(and, 'or', true);
+  function expr() {
+    const a = or();
+    if (!is('name', 'if')) return a;
+    i++;
+    const c = or();
+    let b = () => null;
+    if (is('name', 'else')) {
+      i++;
+      b = expr();
+    }
+    return env => (tplTruthy(c(env)) ? a(env) : b(env));
+  }
+
+  const fn = expr();
+  if (i < toks.length) throw new Error(`Unexpected "${toks[i].v}"`);
+  return { fn, names };
+}
+
+const tplResult = v => {
+  if (v == null) return null;
+  const n = typeof v === 'number' ? v : typeof v === 'boolean' ? Number(v)
+    : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+  if (!Number.isFinite(n)) throw new Error(`The result ${tplShow(v)} is not a number`);
+  return n;
+};
+
+// Evaluates a series template for every day (or hour) with data. A series without a value there
+// counts as 0 for meters; for mean/min/max that day is left out.
+function applyTemplate(series, raw, at, tpl, type, fail) {
+  const out = new Map();
+  if (!tpl.fn) return out;
+  const all = tpl.names.has('series');
+  const used = series.map(s => all || tpl.names.has(s.id));
+  for (const rk of at.keys()) {
+    const env = { series: {} };
+    let have = false;
+    let gap = false;
+    series.forEach((s, i) => {
+      let v = raw[i].get(rk);
+      if (v == null) {
+        if (used[i]) gap = true;
+        v = type === 'change' ? 0 : null;
+      } else if (used[i]) have = true;
+      env[s.id] = v;
+      env.series[s.id] = v;
+    });
+    if (!have || (gap && type !== 'change')) continue;
+    try {
+      const v = tplResult(tpl.fn(env));
+      if (v != null) out.set(rk, v);
+    } catch (err) {
+      fail(err);
+    }
+  }
+  return out;
 }
 
 // ---------- cycles ----------
@@ -229,6 +492,17 @@ const aggValue = (a, type) => {
 function processData(cfg, cycles, results, zone, type) {
   const group = cfg.group_by;
   const hourly = group === 'hour';
+  const errors = new Map();
+  const fail = (s, err) => { if (!errors.has(s.name)) errors.set(s.name, err?.message || String(err)); };
+  const templates = cfg.series.map(s => {
+    if (!s.template) return null;
+    try {
+      return compileTemplate(s.template);
+    } catch (err) {
+      fail(s, err);
+      return { fn: null, names: new Set() };
+    }
+  });
   const bucketOf = (dt, h, cy) => {
     if (group === 'month') return (dt.y - cy.start.y) * 12 + dt.m - 1;
     const pos = dayPos(dt, cy.start.y);
@@ -261,10 +535,9 @@ function processData(cfg, cycles, results, zone, type) {
     const res = results[ci] || {};
     const fetchStart = zone.midnight(cy.start);
     const fetchEnd = zone.midnight(addDays(cy.until, 1));
-    const seen = new Map();
-    cy.buckets = [];
-    cy.totals = [];
-    cfg.series.forEach(s => {
+    // One row per day (or hour): `at` knows where it belongs, `raw` holds each series' summed statistics.
+    const at = new Map();
+    const raw = cfg.series.map(s => {
       const rows = new Map();
       for (const id of s.statistics) {
         for (const r of res[id] || []) {
@@ -275,25 +548,36 @@ function processData(cfg, cycles, results, zone, type) {
           const dt = { y: p.y, m: p.m, d: p.d };
           const pos = dayPos(dt, cy.start.y);
           const rk = hourly ? pos * 24 + p.h : pos;
-          const row = rows.get(rk) || { v: 0, b: bucketOf(dt, p.h, cy), pos, dayKey: bucketOf(dt, 0, cy) };
-          row.v += Number(v);
-          rows.set(rk, row);
+          if (!at.has(rk)) at.set(rk, { b: bucketOf(dt, p.h, cy), pos, day: bucketOf(dt, 0, cy) });
+          rows.set(rk, (rows.get(rk) ?? 0) + Number(v));
         }
       }
+      return rows;
+    });
+    const values = cfg.series.map((s, si) =>
+      (templates[si] ? applyTemplate(cfg.series, raw, at, templates[si], type, err => fail(s, err)) : raw[si]));
+
+    cy.buckets = [];
+    cy.totals = [];
+    for (const rows of values) {
       const buckets = new Map();
       const total = newAgg();
-      for (const row of rows.values()) {
-        if (!buckets.has(row.b)) buckets.set(row.b, newAgg());
-        addAgg(buckets.get(row.b), row.v);
-        addAgg(total, row.v);
-        if (!seen.has(row.dayKey)) seen.set(row.dayKey, new Set());
-        seen.get(row.dayKey).add(row.pos);
+      for (const [rk, v] of rows) {
+        const b = at.get(rk).b;
+        if (!buckets.has(b)) buckets.set(b, newAgg());
+        addAgg(buckets.get(b), v);
+        addAgg(total, v);
       }
       cy.buckets.push(new Map([...buckets].map(([k, a]) => [k, aggValue(a, type)])));
       cy.totals.push(aggValue(total, type));
-    });
+    }
 
-    // Coverage is counted in days with data from any series.
+    // Coverage is counted in days with data from any statistic.
+    const seen = new Map();
+    for (const x of at.values()) {
+      if (!seen.has(x.day)) seen.set(x.day, new Set());
+      seen.get(x.day).add(x.pos);
+    }
     cy.partial = new Set();
     let covered = 0;
     for (const [key, days] of cy.expected) {
@@ -317,7 +601,7 @@ function processData(cfg, cycles, results, zone, type) {
     for (const cy of cycles) cy.partialSlots = cy.partial;
   }
 
-  return { cycles, slots, type };
+  return { cycles, slots, type, errors: [...errors] };
 }
 
 // ---------- formatting ----------
@@ -996,6 +1280,7 @@ class HaComparisonCard extends HTMLElement {
     const notes = vis.filter(cy => !cy.complete)
       .map(cy => `* ${cy.label}: data for ${cy.coveredDays} of ${cy.expectedDays} days`);
     if (d.missing.length) notes.push(`No long-term statistics for ${d.missing.join(', ')}`);
+    for (const [name, msg] of d.errors) notes.push(`${name}: ${msg}`);
     this._els.note.textContent = notes.join(' \u00b7 ');
   }
 
@@ -1228,7 +1513,8 @@ class HaComparisonCardEditor extends HTMLElement {
       <div class="section">Compare with</div>
       <ha-form id="f-compare"></ha-form>
       <div class="section">Bars</div>
-      <div class="hint">Each series is one segment of the stacked bar and one line of the value table, in this order.</div>
+      <div class="hint">Each series is one segment of the stacked bar and one line of the value table, in this order. Its value is
+        the sum of its statistics, or a value template over all series, e.g. <code>{{ solar - feed_in }}</code>.</div>
       ${series.map((s, i) => this._seriesHtml(i, series.length)).join('')}
       <button class="addbtn" id="add-series">+ Add series</button>
       <div class="section">Value table</div>
@@ -1435,16 +1721,19 @@ class HaComparisonCardEditor extends HTMLElement {
     this._setupForm(`#f-series-${i}`, [
       { name: 'name', selector: { text: {} } },
       { name: 'statistics', selector: { statistic: { multiple: true } } },
+      { name: 'template', label: 'Value template', selector: { template: {} },
+        helper: 'Empty = sum of the statistics. Every series by its template variable, e.g. {{ solar - feed_in }}' },
       { name: 'id', selector: { text: {} }, helper: 'Empty = derived from the name' },
       { name: 'below_zero', selector: { boolean: {} } },
     ], {
-      name: s.name ?? '', statistics: [].concat(s.statistics ?? []), id: s.id ?? '', below_zero: s.below_zero === true,
+      name: s.name ?? '', statistics: [].concat(s.statistics ?? []), template: s.template ?? '', id: s.id ?? '',
+      below_zero: s.below_zero === true,
     }, v => {
       // Look up the item at event time: the list may have been re-rendered since.
       const cur = this._config.series[i];
       if (!cur) return;
       this._patch({
-        name: v.name, id: v.id, statistics: (v.statistics || []).filter(Boolean),
+        name: v.name, id: v.id, statistics: (v.statistics || []).filter(Boolean), template: v.template,
         below_zero: v.below_zero ? true : null,
       }, cur);
       this._fire();
@@ -1498,7 +1787,8 @@ class HaComparisonCardEditor extends HTMLElement {
     const n = [].concat(s.statistics ?? []).filter(Boolean).length;
     this._el(`#series-title-${i}`).textContent = s.name || `Series ${i + 1}`;
     this._el(`#series-meta-${i}`).textContent =
-      `{{ ${ids[i].id} }} \u00b7 ${n ? `${n} ${n === 1 ? 'statistic' : 'statistics'}` : 'no statistic yet'}${s.below_zero ? ' \u00b7 below zero' : ''}`;
+      `{{ ${ids[i].id} }} \u00b7 ${n ? `${n} ${n === 1 ? 'statistic' : 'statistics'}` : 'no statistic yet'}`
+      + `${s.template ? ` \u00b7 = ${String(s.template).replace(/\s+/g, ' ')}` : ''}${s.below_zero ? ' \u00b7 below zero' : ''}`;
     const pal = this._hass?.themes?.darkMode ? PALETTE_DARK : PALETTE_LIGHT;
     const color = s.color || pal[i % pal.length];
     this._el(`#dot-${i}`).style.background = color;
