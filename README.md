@@ -159,6 +159,17 @@ Tips:
 - **Division:** guard against zero with `… if solar else none`; the cell then shows "–".
 - **Entities** can be used as well, e.g. a price with `states('…') | float(0)`. The row updates
   when the entity changes.
+- **A value per year,** e.g. the electricity price of each year: look it up by `year` in a dict,
+  with a fallback for all other years. Unlike an entity, which only knows today's price, this
+  keeps the previous years right:
+
+  ```
+  {% set price = {2024: 0.328, 2025: 0.334, 2026: 0.318}.get(year, 0.34) %}
+  {{ solar * price }}
+  ```
+
+  `year` is the first year of the column (`2025` for `2025/26`). A price change within a year
+  cannot be expressed this way, because a row only sees the totals of the year.
 - **Text** results are shown as they are, without comparison:
   `{{ 'record' if solar > 1000 else 'normal' }}`.
 
