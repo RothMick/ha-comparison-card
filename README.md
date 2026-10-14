@@ -5,7 +5,8 @@ previous years.
 
 - The current year is drawn as **stacked bars** from long-term statistics.
 - Previous years stand behind it as **ghost bars**: the same segments in the same colors,
-  translucent and offset, each year one step further back.
+  translucent and offset, each year one step further back – or **side by side**, all years fully
+  visible.
 - A **value table** lists the totals per year with the change against the current year.
 - **Calculated rows** add your own figures (consumption, self-sufficiency, costs, …) from Jinja2
   templates.
@@ -30,7 +31,8 @@ One JavaScript file, no dependencies, with a visual editor.
   Statistics are used directly, so a replaced or deleted device keeps its history.
 - **Value templates** turn a series into a formula of other series, e.g. solar used at home =
   production minus feed-in. They are evaluated in the browser and cost Home Assistant nothing.
-- Up to **five previous years**, opacity per year. Chips in the card show or hide single years.
+- Up to **five previous years**, as ghost bars with an opacity per year or side by side. Chips in
+  the card show or hide single years.
 - **Missing data** is detected per day. Years with gaps are marked with `*` and get no percentage.
 - Tooltip per bar, theme colors, number and date format of your Home Assistant language.
 
@@ -50,7 +52,8 @@ One JavaScript file, no dependencies, with a visual editor.
 | `end` | yesterday | Last day: `MM-DD`, `yesterday` or `today` (see [Date range](#date-range)) |
 | `group_by` | `month` | One bar per `hour`, `day` or `month` |
 | `compare_years` | `[1]` | Previous years as years back (1 = last year, up to 5) |
-| `ghost_opacity` | 45, 30, 20, 13, 8 % | Opacity per years back, e.g. `{1: 50, 2: 25}` (percent, or fractions up to 1) |
+| `layout` | `behind` | How the years of one bar are arranged: `behind` – previous years as translucent ghost bars behind the current one; `side_by_side` – one fully visible, narrower bar per year, oldest left, 1 px apart |
+| `ghost_opacity` | 45, 30, 20, 13, 8 % | Opacity per years back, e.g. `{1: 50, 2: 25}` (percent, or fractions up to 1). Only with `layout: behind` |
 | `series` | – | Bars and table lines, see [Series](#series) |
 | `rows` | – | Calculated rows, see [Calculated rows](#calculated-rows) |
 | `headline` | – | Name of a series or row shown large in the header, with the change against the first compared year |
@@ -286,7 +289,8 @@ rows:
 ## Visual editor
 
 - **General:** title, first and last day, one bar per hour/day/month, statistic type.
-- **Compare with:** one line per previous year – switch plus opacity in percent.
+- **Compare with:** behind or side by side, then one line per previous year – switch plus
+  opacity in percent (locked when side by side).
 - **Bars:** one collapsible box per series (name, statistics, value template, template variable,
   below zero, color), move up/down, remove.
 - **Value table:** switch for the table and the calculated rows (name, icon, template, unit,
@@ -317,6 +321,7 @@ fake recorder, rendering, templates and the editor in jsdom.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.3.0 | 2026-10-14 | New option `layout: side_by_side`: the years of a bar stand next to each other, fully visible and narrower, oldest left, 1 px apart (default `behind` keeps the ghost bars) |
 | 0.2.0 | 2026-09-29 | Value templates for series: a series can be a formula of other series, e.g. solar used at home = production minus feed-in; evaluated in the browser |
 | 0.1.1 | 2026-09-28 | Fixed last day: the value table sums previous years over their whole range instead of stopping at today's calendar day |
 | 0.1.0 | 2026-09-28 | First version |

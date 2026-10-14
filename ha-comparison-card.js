@@ -1,12 +1,13 @@
 /**
- * ha-comparison-card v0.2.0
+ * ha-comparison-card v0.3.0
  * Compares a date range of this year with the same range of previous years:
- * stacked bars from long-term statistics, previous years as offset ghost bars.
+ * stacked bars from long-term statistics, previous years as offset ghost bars or side by side.
  * No dependencies. Details: README.md
  */
 
-const CARD_VERSION = '0.2.0';
+const CARD_VERSION = '0.3.0';
 const GROUPS = ['hour', 'day', 'month'];
+const LAYOUTS = ['behind', 'side_by_side'];
 const STAT_TYPES = ['change', 'mean', 'min', 'max'];
 const MAX_YEARS_BACK = 5;
 const GHOST_OPACITY = [0.45, 0.3, 0.2, 0.13, 0.08];
@@ -19,6 +20,7 @@ const DAY_MS = 86400000;
 const CURRENT_TTL = 5 * 60000;
 const REFRESH_AFTER_MIDNIGHT = 20 * 60000;
 const TODAY_REFRESH = 10 * 60000;
+const SIDE_GAP = 1;
 const ROW_ICON = 'mdi:function-variant';
 
 const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => (
@@ -117,6 +119,7 @@ const ghostOpacity = (cfg, k) => cfg.ghost_opacity[k] ?? GHOST_OPACITY[k - 1] ??
 function normalizeConfig(raw) {
   const group = raw.group_by || 'month';
   if (!GROUPS.includes(group)) throw new Error(`group_by must be one of: ${GROUPS.join(', ')}`);
+  if (raw.layout && !LAYOUTS.includes(raw.layout)) throw new Error(`layout must be one of: ${LAYOUTS.join(', ')}`);
   if (raw.start && !parseMonthDay(raw.start)) throw new Error('start must be a day as MM-DD');
   if (raw.end && raw.end !== 'yesterday' && raw.end !== 'today' && !parseMonthDay(raw.end)) {
     throw new Error('end must be MM-DD, yesterday or today');
@@ -171,6 +174,7 @@ function normalizeConfig(raw) {
     chart_height: Math.min(600, Math.max(80, height ?? 200)),
     show_table: raw.show_table !== false,
     ghost_opacity: parseOpacities(raw.ghost_opacity),
+    layout: raw.layout || 'behind',
   };
 }
 
@@ -1027,13 +1031,14 @@ class HaComparisonCard extends HTMLElement {
   _renderChips() {
     const cycles = this._data.cycles;
     if (cycles.length < 2) { this._els.chips.innerHTML = ''; return; }
+    const side = this._config.layout === 'side_by_side';
     const sw = (op, color = 'var(--primary-text-color)') => `<svg width="14" height="12" aria-hidden="true"><rect x="1" y="1" width="12" height="10" rx="2"
       style="fill: ${color}; fill-opacity: ${op}"></rect></svg>`;
     this._els.chips.innerHTML = cycles.map(cy => {
       if (cy.k === 0) return `<span class="chip on current">${sw(1, 'var(--secondary-text-color)')}${escapeHtml(cy.label)}</span>`;
       const on = !this._hidden.has(cy.k);
       return `<button class="chip${on ? ' on' : ''}" data-k="${cy.k}" aria-pressed="${on}"
-        title="${on ? 'Hide' : 'Show'} ${escapeHtml(cy.label)}">${sw(on ? ghostOpacity(this._config, cy.k) : 0)}${escapeHtml(cy.label)}</button>`;
+        title="${on ? 'Hide' : 'Show'} ${escapeHtml(cy.label)}">${side ? sw(on ? 1 : 0, 'var(--secondary-text-color)') : sw(on ? ghostOpacity(this._config, cy.k) : 0)}${escapeHtml(cy.label)}</button>`;
     }).join('');
   }
 
@@ -1085,7 +1090,11 @@ class HaComparisonCard extends HTMLElement {
     const pw = W - ML - MR;
     const sw = pw / n;
     const k = ghosts.length;
-    const bw = Math.max(1, Math.min(24, (sw * 0.8) / (1 + 0.45 * k)));
+    const side = c.layout === 'side_by_side';
+    const nY = vis.length;
+    const bw = side
+      ? Math.max(1, Math.min(nY > 1 ? 16 : 24, (sw * 0.8 - SIDE_GAP * (nY - 1)) / nY))
+      : Math.max(1, Math.min(24, (sw * 0.8) / (1 + 0.45 * k)));
     const off = bw * 0.45;
     const r1 = v => Math.round(v * 10) / 10;
 
@@ -1105,6 +1114,18 @@ class HaComparisonCard extends HTMLElement {
     let bars = '';
     slots.forEach((slot, i) => {
       const cx = ML + sw * i + sw / 2;
+      if (side) {
+        // One fully visible bar per year, oldest first.
+        const g0 = cx - (bw * nY + SIDE_GAP * (nY - 1)) / 2;
+        [...vis].reverse().forEach((cy, j) => {
+          const vals = valuesAt(cy, slot.key);
+          if (vals.every(v => v == null)) return;
+          for (const p of stackPaths(vals.map(v => Math.max(0, v ?? 0)), c.series, g0 + j * (bw + SIDE_GAP), bw, y, 0.75)) {
+            bars += `<path d="${p.d}" style="fill: ${escapeHtml(colors[p.i])}"></path>`;
+          }
+        });
+        return;
+      }
       const x0 = cx - (bw + off * k) / 2;
       // Previous years stand behind the current bar in the series colors, translucent,
       // each year one step further back.
@@ -1428,6 +1449,7 @@ const LABELS = {
   unit: 'Unit',
   decimals: 'Decimals',
   chart_height: 'Chart height (px)',
+  layout: 'Previous years',
   show_table: 'Show value table',
   name: 'Name',
   statistics: 'Statistics (summed up)',
@@ -1627,23 +1649,30 @@ class HaComparisonCardEditor extends HTMLElement {
     ];
   }
 
-  // One line per previous year: switch plus the opacity of its ghost bars in percent.
+  // Layout choice, then one line per previous year: switch plus the opacity of its ghost bars in percent.
   _compareSchema() {
     const on = new Set(this._compareYears());
+    const side = this._config.layout === 'side_by_side';
     const y = new Date().getFullYear();
-    return Array.from({ length: MAX_YEARS_BACK }, (_, i) => ({
-      type: 'grid', name: '', column_min_width: '120px', schema: [
-        { name: `year_${i + 1}`, label: `${y - i - 1} (${i + 1} ${i ? 'years' : 'year'} back)`, selector: { boolean: {} } },
-        { name: `opacity_${i + 1}`, label: 'Opacity', disabled: !on.has(i + 1),
-          selector: { number: { min: 0, max: 100, step: 1, mode: 'box', unit_of_measurement: '%' } } },
-      ],
-    }));
+    return [
+      { name: 'layout', required: true, selector: { select: { mode: 'dropdown', options: [
+        { value: 'behind', label: 'Behind the current bar (ghosts)' },
+        { value: 'side_by_side', label: 'Side by side, fully visible' },
+      ] } } },
+      ...Array.from({ length: MAX_YEARS_BACK }, (_, i) => ({
+        type: 'grid', name: '', column_min_width: '120px', schema: [
+          { name: `year_${i + 1}`, label: `${y - i - 1} (${i + 1} ${i ? 'years' : 'year'} back)`, selector: { boolean: {} } },
+          { name: `opacity_${i + 1}`, label: 'Opacity', disabled: side || !on.has(i + 1),
+            selector: { number: { min: 0, max: 100, step: 1, mode: 'box', unit_of_measurement: '%' } } },
+        ],
+      })),
+    ];
   }
 
   _compareData() {
     const on = new Set(this._compareYears());
     const cur = parseOpacities(this._config.ghost_opacity);
-    const data = {};
+    const data = { layout: this._config.layout || 'behind' };
     for (let k = 1; k <= MAX_YEARS_BACK; k++) {
       data[`year_${k}`] = on.has(k);
       data[`opacity_${k}`] = Math.round((cur[k] ?? GHOST_OPACITY[k - 1] ?? 0.05) * 100);
@@ -1679,7 +1708,7 @@ class HaComparisonCardEditor extends HTMLElement {
     });
 
     this._setupForm('#f-compare', this._compareSchema(), this._compareData(), v => {
-      const before = this._compareYears().join();
+      const before = `${this._compareYears().join()}|${this._config.layout}`;
       const years = [];
       const opacity = {};
       for (let k = 1; k <= MAX_YEARS_BACK; k++) {
@@ -1689,9 +1718,13 @@ class HaComparisonCardEditor extends HTMLElement {
         const pct = numOrNull(v[`opacity_${k}`]);
         if (pct != null && pct !== Math.round((GHOST_OPACITY[k - 1] ?? 0.05) * 100)) opacity[k] = pct;
       }
-      this._patch({ compare_years: years, ghost_opacity: Object.keys(opacity).length ? opacity : null });
+      this._patch({
+        compare_years: years,
+        ghost_opacity: Object.keys(opacity).length ? opacity : null,
+        layout: v.layout === 'side_by_side' ? 'side_by_side' : null,
+      });
       this._fire();
-      if (years.join() !== before) {
+      if (`${years.join()}|${this._config.layout}` !== before) {
         const form = this._el('#f-compare');
         if (form) form.schema = this._compareSchema();
       }
