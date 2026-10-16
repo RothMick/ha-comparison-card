@@ -39,6 +39,14 @@ One JavaScript file, no dependencies, with a visual editor.
 
 ## Installation
 
+### HACS (custom repository)
+
+1. HACS → ⋮ → **Custom repositories** → add `https://github.com/RothMick/ha-comparison-card`, type **Dashboard**.
+2. Search for **Comparison Card**, download it.
+3. Reload the browser and add the card *Comparison Card* to a dashboard.
+
+### Manual
+
 1. Copy `ha-comparison-card.js` to `/config/www/ha-comparison-card/`.
 2. Add it as a dashboard resource (*Settings → Dashboards → ⋮ → Resources*):
    URL `/local/ha-comparison-card/ha-comparison-card.js`, type *JavaScript module*.
