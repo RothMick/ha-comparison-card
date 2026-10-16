@@ -1,11 +1,11 @@
 /**
- * ha-comparison-card v0.3.0
+ * ha-comparison-card v0.4.0
  * Compares a date range of this year with the same range of previous years:
  * stacked bars from long-term statistics, previous years as offset ghost bars or side by side.
  * No dependencies. Details: README.md
  */
 
-const CARD_VERSION = '0.3.0';
+const CARD_VERSION = '0.4.0';
 const GROUPS = ['hour', 'day', 'month'];
 const LAYOUTS = ['behind', 'side_by_side'];
 const STAT_TYPES = ['change', 'mean', 'min', 'max'];
@@ -161,8 +161,8 @@ function normalizeConfig(raw) {
     title: raw.title ? String(raw.title) : '',
     start: parseMonthDay(raw.start) || { m: 1, d: 1 },
     end: parseMonthDay(raw.end),
-    // Only an empty end (yesterday) sticks to whole days; today and a fixed last day include the running day.
-    include_today: raw.end === 'today' || !!parseMonthDay(raw.end),
+    // Only end: yesterday sticks to whole days; empty, today and a fixed last day include the running day.
+    include_today: raw.end !== 'yesterday',
     group_by: group,
     compare: backs,
     series,
@@ -443,8 +443,8 @@ function applyTemplate(series, raw, at, tpl, type, fail) {
 // ---------- cycles ----------
 
 // Cycle 0 is the latest range that has already begun; cycle k is the same range k years earlier.
-// `until` is the last day that counts: in the current year lastDay at most (yesterday, or today unless the
-// end is empty), in previous years their last day. Without a fixed end that is the month-day of lastDay.
+// `until` is the last day that counts: in the current year lastDay at most (today, or yesterday with
+// end: yesterday), in previous years their last day. Without a fixed end that is the month-day of lastDay.
 function buildCycles(cfg, lastDay) {
   const startMd = cfg.start;
   let s0 = onYear(lastDay.y, startMd);
@@ -1462,7 +1462,7 @@ const LABELS = {
 
 const HELPERS = {
   start: 'Empty = 01-01',
-  end: 'Empty = yesterday (whole days only). "today" or a fixed day include the running day. A last day before the first day spans the turn of the year.',
+  end: 'Empty = today, including the running day. "yesterday" = whole days only. A last day before the first day spans the turn of the year.',
   stat_type: 'Auto: change for meters, mean otherwise',
   unit: 'Empty = unit of the statistic',
   decimals: 'Empty = automatic',
@@ -1694,7 +1694,7 @@ class HaComparisonCardEditor extends HTMLElement {
   _initForms() {
     const c = this._config;
     this._setupForm('#f-general', this._generalSchema(), {
-      title: c.title ?? '', start: c.start ?? '', end: c.end === 'yesterday' ? '' : (c.end ?? ''),
+      title: c.title ?? '', start: c.start ?? '', end: c.end ?? '',
       group_by: c.group_by ?? 'month', stat_type: c.stat_type ?? 'auto',
     }, v => {
       this._patch({

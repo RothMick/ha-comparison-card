@@ -25,7 +25,7 @@ One JavaScript file, no dependencies, with a visual editor.
 - One bar per **hour, day or month** over any date range, also across New Year (e.g. a heating
   season from October to March).
 - **Every year over the same range:** calendar days line up across years. With a rolling end
-  (yesterday or today) previous years stop at the same calendar day; with a fixed last day every
+  (today or yesterday) previous years stop at the same calendar day; with a fixed last day every
   previous year counts its whole range. Leap days only count where they exist.
 - **Several statistics per series** are summed up, e.g. three inverters as one "Solar" series.
   Statistics are used directly, so a replaced or deleted device keeps its history.
@@ -49,7 +49,7 @@ One JavaScript file, no dependencies, with a visual editor.
 |---|---|---|
 | `title` | – | Card title |
 | `start` | `01-01` | First day of the range (`MM-DD`) |
-| `end` | yesterday | Last day: `MM-DD`, `yesterday` or `today` (see [Date range](#date-range)) |
+| `end` | today | Last day: `MM-DD`, `today` or `yesterday` (see [Date range](#date-range)) |
 | `group_by` | `month` | One bar per `hour`, `day` or `month` |
 | `compare_years` | `[1]` | Previous years as years back (1 = last year, up to 5) |
 | `layout` | `behind` | How the years of one bar are arranged: `behind` – previous years as translucent ghost bars behind the current one; `side_by_side` – one fully visible, narrower bar per year, oldest left, 1 px apart |
@@ -90,14 +90,14 @@ The order of the series is the stacking order from the zero line and the order o
 
 | `end` | Range | Today |
 |---|---|---|
-| empty / `yesterday` | first day … yesterday, moves on every day | not included (whole days only) |
-| `today` | first day … today, moves on every day | included, refreshed every 10 minutes |
+| empty / `today` | first day … today, moves on every day | included, refreshed every 10 minutes |
+| `yesterday` | first day … yesterday, moves on every day | not included (whole days only) |
 | `MM-DD` | fixed, e.g. `01-01` … `12-31` | included while the range lasts |
 
 - A last day before the first day spans the turn of the year (`start: "10-01"`, `end: "03-31"`).
 - The current range is the latest one that has begun. On 1 January a range starting `01-01`
   shows the new year.
-- The value table sums every year over its own range: the current year up to yesterday or today,
+- The value table sums every year over its own range: the current year up to today or yesterday,
   previous years up to their last day. With a rolling end that is the same calendar day as today;
   with a fixed last day (e.g. `12-31`) it is the whole range, so the table shows how much of the
   previous years has been reached so far.
@@ -184,7 +184,6 @@ line and the savings from the solar power used at home as a calculated row (firs
 ```yaml
 type: custom:ha-comparison-card
 title: Energy
-end: today
 compare_years: [1, 2]
 series:
   - name: Solar
@@ -228,7 +227,6 @@ the solar value times the price:
 ```yaml
 type: custom:ha-comparison-card
 title: Energy
-end: today
 compare_years: [1, 2]
 series:
   - name: Solar
@@ -321,6 +319,7 @@ fake recorder, rendering, templates and the editor in jsdom.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.4.0 | 2026-10-16 | **Changed default:** an empty `end` now means today, including the running day. Use `end: yesterday` for whole days only |
 | 0.3.0 | 2026-10-14 | New option `layout: side_by_side`: the years of a bar stand next to each other, fully visible and narrower, oldest left, 1 px apart (default `behind` keeps the ghost bars) |
 | 0.2.0 | 2026-09-29 | Value templates for series: a series can be a formula of other series, e.g. solar used at home = production minus feed-in; evaluated in the browser |
 | 0.1.1 | 2026-09-28 | Fixed last day: the value table sums previous years over their whole range instead of stopping at today's calendar day |
