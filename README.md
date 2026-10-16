@@ -252,7 +252,8 @@ rows:
 headline: Solar
 ```
 
-Heating season per month, three seasons back:
+Heating season per month, three seasons back, the seasons side by side instead of ghost bars
+(`layout: side_by_side`):
 
 ```yaml
 type: custom:ha-comparison-card
@@ -260,6 +261,7 @@ title: Heating
 start: "10-01"
 end: "03-31"
 compare_years: [1, 2, 3]
+layout: side_by_side
 series:
   - name: Gas
     statistics: [sensor.gas_meter]
