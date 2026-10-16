@@ -334,6 +334,7 @@ fake recorder, rendering, templates and the editor in jsdom.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.4.1 | 2026-10-16 | Documentation: screenshots of `layout: side_by_side` (heating example with the costs at the price of each year), rain screenshots with the current value table. No change to the card |
 | 0.4.0 | 2026-10-16 | **Changed default:** an empty `end` now means today, including the running day. Use `end: yesterday` for whole days only |
 | 0.3.0 | 2026-10-14 | New option `layout: side_by_side`: the years of a bar stand next to each other, fully visible and narrower, oldest left, 1 px apart (default `behind` keeps the ghost bars) |
 | 0.2.0 | 2026-09-29 | Value templates for series: a series can be a formula of other series, e.g. solar used at home = production minus feed-in; evaluated in the browser |

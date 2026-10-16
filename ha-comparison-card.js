@@ -1,11 +1,11 @@
 /**
- * ha-comparison-card v0.4.0
+ * ha-comparison-card v0.4.1
  * Compares a date range of this year with the same range of previous years:
  * stacked bars from long-term statistics, previous years as offset ghost bars or side by side.
  * No dependencies. Details: README.md
  */
 
-const CARD_VERSION = '0.4.0';
+const CARD_VERSION = '0.4.1';
 const GROUPS = ['hour', 'day', 'month'];
 const LAYOUTS = ['behind', 'side_by_side'];
 const STAT_TYPES = ['change', 'mean', 'min', 'max'];
