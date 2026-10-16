@@ -18,7 +18,8 @@ One JavaScript file, no dependencies, with a visual editor.
 | ![Energy, light theme](images/energy-light.png) | ![Energy, dark theme](images/energy-dark.png) |
 | ![Rain, light theme](images/rain-light.png) | ![Rain, dark theme](images/rain-dark.png) |
 
-*Screenshots with invented data. The configurations are the first two [examples](#examples).*
+*Screenshots with invented data. The configurations are the first two [examples](#examples); the
+[heating example](#examples) shows the years side by side.*
 
 ## Features
 
@@ -253,7 +254,11 @@ headline: Solar
 ```
 
 Heating season per month, three seasons back, the seasons side by side instead of ghost bars
-(`layout: side_by_side`):
+(`layout: side_by_side`), with the costs at the gas price of each year:
+
+| Light | Dark |
+|---|---|
+| ![Heating side by side, light theme](images/heating-light.png) | ![Heating side by side, dark theme](images/heating-dark.png) |
 
 ```yaml
 type: custom:ha-comparison-card
@@ -265,6 +270,14 @@ layout: side_by_side
 series:
   - name: Gas
     statistics: [sensor.gas_meter]
+    color: "#ec4629"
+rows:
+  - name: Cost
+    icon: mdi:cash-100
+    template: "{% set price = {2022: 0.18, 2023: 0.14, 2024: 0.12}.get(year, 0.11) %}{{ gas * price }}"
+    unit: €
+    decimals: 0
+headline: Gas
 ```
 
 December per day, with the daily costs:
