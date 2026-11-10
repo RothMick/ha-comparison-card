@@ -24,7 +24,7 @@ One JavaScript file, no dependencies, with a visual editor.
 ## Features
 
 - One bar per **hour, day or month** over any date range, also across New Year (e.g. a heating
-  season from October to March).
+  season from October to March). Hourly bars are meant for ranges of up to 31 days.
 - **Every year over the same range:** calendar days line up across years. With a rolling end
   (today or yesterday) previous years stop at the same calendar day; with a fixed last day every
   previous year counts its whole range. Leap days only count where they exist.
@@ -32,9 +32,12 @@ One JavaScript file, no dependencies, with a visual editor.
   Statistics are used directly, so a replaced or deleted device keeps its history.
 - **Value templates** turn a series into a formula of other series, e.g. solar used at home =
   production minus feed-in. They are evaluated in the browser and cost Home Assistant nothing.
+- **Negative values** hang below the zero line: a mean temperature below freezing, a net meter
+  that ran backwards, or a value template that goes negative.
 - Up to **five previous years**, as ghost bars with an opacity per year or side by side. Chips in
   the card show or hide single years.
 - **Missing data** is detected per day. Years with gaps are marked with `*` and get no percentage.
+  The running day never counts as missing.
 - Tooltip per bar, theme colors, number and date format of your Home Assistant language.
 
 ## Installation
@@ -59,22 +62,23 @@ One JavaScript file, no dependencies, with a visual editor.
 | `title` | – | Card title |
 | `start` | `01-01` | First day of the range (`MM-DD`) |
 | `end` | today | Last day: `MM-DD`, `today` or `yesterday` (see [Date range](#date-range)) |
-| `group_by` | `month` | One bar per `hour`, `day` or `month` |
+| `group_by` | `month` | One bar per `hour`, `day` or `month`. `hour` is meant for ranges of up to 31 days; a longer range is drawn per day, with a note below the chart |
 | `compare_years` | `[1]` | Previous years as years back (1 = last year, up to 5) |
 | `layout` | `behind` | How the years of one bar are arranged: `behind` – previous years as translucent ghost bars behind the current one; `side_by_side` – one fully visible, narrower bar per year, oldest left, 1 px apart |
-| `ghost_opacity` | 45, 30, 20, 13, 8 % | Opacity per years back, e.g. `{1: 50, 2: 25}` (percent, or fractions up to 1). Only with `layout: behind` |
+| `ghost_opacity` | 45, 30, 20, 13, 8 % | Opacity per years back, e.g. `{1: 50, 2: 25}` in percent. Values below 1 are read as fractions (`0.5` = 50 %), so `1` is 1 %. Only with `layout: behind` |
 | `series` | – | Bars and table lines, see [Series](#series) |
 | `rows` | – | Calculated rows, see [Calculated rows](#calculated-rows) |
 | `headline` | – | Name of a series or row shown large in the header, with the change against the first compared year |
 | `show_table` | `true` | Show the value table |
 | `stat_type` | `auto` | `change` (meters), `mean`, `min` or `max`. Auto: `change` for statistics with a sum, `mean` otherwise |
-| `unit` | from statistic | Display unit; converts within the unit class (Wh/kWh/MWh, …) |
+| `unit` | from statistic | Unit shown in the card. A unit of the same class is converted (Wh, kWh, MWh, …); any other text is only a label, e.g. `€` for a series calculated by a value template |
 | `decimals` | automatic | Decimals of the series values |
 | `chart_height` | `200` | Chart height in px |
 
 ### Series
 
 The order of the series is the stacking order from the zero line and the order of the table lines.
+Positive values stack upwards, negative values downwards.
 
 | Key | Description |
 |---|---|
@@ -83,7 +87,7 @@ The order of the series is the stacking order from the zero line and the order o
 | `template` | Value template instead of the plain sum, e.g. `{{ solar - feed_in }}` (see [Value templates](#value-templates-for-series)) |
 | `id` | Template variable name. Default: derived from the name (`Grid import` → `grid_import`; `ä` → `ae`, `é` → `e`) |
 | `color` | Any CSS color; default from a fixed palette |
-| `below_zero` | Draw this series below the zero line, e.g. feed-in. Display only, nothing is subtracted |
+| `below_zero` | Draw this series below the zero line, e.g. feed-in. Display only, nothing is subtracted. It flips the side: a negative value of such a series is drawn above the line |
 
 ### Calculated rows
 
@@ -135,9 +139,11 @@ series:
   is left out.
 - Value templates run in the browser, because a bar chart needs hundreds of values and Home
   Assistant would have to render each one. They understand the expression part of Jinja2:
-  numbers, the series variables and `series['name']`, `+ - * / // % **`, comparisons,
-  `and or not`, `a if condition else b`, lists, and `max min abs round float int sum default`
-  as functions or filters (`max(solar, 0)`, `[a, b] | max`, `x | round(1)`).
+  numbers, the series variables and `series['name']`, `+ - * / // % **`, comparisons (also
+  chained, `0 < solar < 5`), `and or not`, `a if condition else b`, lists, and
+  `max min abs round float int sum default` as functions or filters (`max(solar, 0)`,
+  `[a, b] | max`, `x | round(1)`). `round` works as in Home Assistant, including the methods
+  `ceil`, `floor` and `half` (`x | round(0, 'floor')`).
 - Not supported: `states()` and other Home Assistant functions, `{% %}` blocks. An error is shown
   below the card, e.g. `Solar: Unknown variable feed`.
 
@@ -307,6 +313,19 @@ rows:
     decimals: 2
 ```
 
+Mean outdoor temperature per month. A statistic without a sum is read as `mean` (set `stat_type`
+to `min` or `max` for the extremes); months below freezing hang below the zero line:
+
+```yaml
+type: custom:ha-comparison-card
+title: Outdoor temperature
+end: "12-31"
+compare_years: [1]
+series:
+  - name: Temperature
+    statistics: [sensor.outdoor_temperature]
+```
+
 ## Visual editor
 
 - **General:** title, first and last day, one bar per hour/day/month, statistic type.
@@ -330,7 +349,8 @@ rows:
   reloaded after midnight (and again 20 minutes later, when the last hour has been compiled),
   and every 10 minutes while the range includes today. State updates do not re-render the card.
 - A day counts as present when any statistic of the card has a row for it. A missing row is not
-  treated as zero.
+  treated as zero. The running day always counts as present: Home Assistant writes its first hour
+  of statistics only after 01:00, so a gap that begins today shows up tomorrow.
 
 ## Tests
 
@@ -342,6 +362,7 @@ fake recorder, rendering, templates and the editor in jsdom.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.5.0 | 2026-11-10 | Negative values are drawn: they hang below the zero line, e.g. mean temperatures below freezing or a value template that goes negative (`below_zero` flips the side). The tooltip follows the height of the pointer – below it at the top of the chart, level with it in the middle, above it at the bottom – and is no longer cut off when the value table is hidden. Value templates: comparisons chain as in Jinja2 (`0 < x < 5`), `round` knows the methods `ceil`, `floor` and `half` and rounds like Home Assistant. Hourly bars of `mean`, `min` and `max` no longer add up the hour that repeats when the clocks go back. `unit`: a text Home Assistant cannot convert to is shown as a label instead of failing the card. The running day no longer marks the current year as incomplete. Hourly bars are drawn for ranges of up to 31 days; a longer range falls back to days, with a note. **Changed:** `ghost_opacity: 1` now means 1 % (fractions must be below 1) |
 | 0.4.1 | 2026-10-16 | Documentation: screenshots of `layout: side_by_side` (heating example with the costs at the price of each year), rain screenshots with the current value table. No change to the card |
 | 0.4.0 | 2026-10-16 | **Changed default:** an empty `end` now means today, including the running day. Use `end: yesterday` for whole days only |
 | 0.3.0 | 2026-10-14 | New option `layout: side_by_side`: the years of a bar stand next to each other, fully visible and narrower, oldest left, 1 px apart (default `behind` keeps the ghost bars) |

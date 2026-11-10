@@ -1,11 +1,11 @@
 /**
- * ha-comparison-card v0.4.1
+ * ha-comparison-card v0.5.0
  * Compares a date range of this year with the same range of previous years:
  * stacked bars from long-term statistics, previous years as offset ghost bars or side by side.
  * No dependencies. Details: README.md
  */
 
-const CARD_VERSION = '0.4.1';
+const CARD_VERSION = '0.5.0';
 const GROUPS = ['hour', 'day', 'month'];
 const LAYOUTS = ['behind', 'side_by_side'];
 const STAT_TYPES = ['change', 'mean', 'min', 'max'];
@@ -21,6 +21,8 @@ const CURRENT_TTL = 5 * 60000;
 const REFRESH_AFTER_MIDNIGHT = 20 * 60000;
 const TODAY_REFRESH = 10 * 60000;
 const SIDE_GAP = 1;
+// Longest range that is drawn in hourly bars; a longer one falls back to one bar per day.
+const HOUR_MAX_DAYS = 31;
 const ROW_ICON = 'mdi:function-variant';
 
 const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => (
@@ -102,14 +104,14 @@ const varName = s => {
 
 const numOrNull = v => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
 
-// ghost_opacity per years back: { 1: 30, 2: 15 } in percent (values up to 1 count as fractions);
-// a list is read as 1, 2, 3 ... years back.
+// ghost_opacity per years back: { 1: 30, 2: 15 } in percent (values below 1 count as fractions,
+// so 1 is one percent); a list is read as 1, 2, 3 ... years back.
 function parseOpacities(raw) {
   const out = {};
   const entries = Array.isArray(raw) ? raw.map((v, i) => [i + 1, v]) : Object.entries(raw && typeof raw === 'object' ? raw : {});
   for (const [k, v] of entries) {
     const n = numOrNull(v);
-    if (n != null && Number(k) >= 1) out[Number(k)] = Math.min(1, Math.max(0, n > 1 ? n / 100 : n));
+    if (n != null && Number(k) >= 1) out[Number(k)] = Math.min(1, Math.max(0, n >= 1 ? n / 100 : n));
   }
   return out;
 }
@@ -206,15 +208,39 @@ const tplExtreme = (name, pick) => (...args) => {
   if (!l.length) throw new Error(`${name}() of an empty list`);
   return pick(...l);
 };
+// Rounds like Python: to the nearest whole number, an exact half goes to the even neighbour.
+const tplRoundEven = v => {
+  const lo = Math.floor(v);
+  return v - lo === 0.5 ? (lo % 2 === 0 ? lo : lo + 1) : Math.round(v);
+};
+// Python's round(x, p), which Home Assistant uses: the nearest value with p decimals, judged by the
+// exact binary value of x (2.675 is slightly less and gives 2.67); an exact half goes to the even digit.
+const tplRound = (x, p) => {
+  const f = 10 ** p;
+  if (!Number.isInteger(p) || p < 0) return tplRoundEven(x * f) / f;
+  if (p > 20 || !Number.isFinite(x)) return x;
+  // x is an exact half at digit p only if x * 2^(p+1) is an odd whole number.
+  const bin = x * 2 ** (p + 1);
+  if (Number.isInteger(bin) && bin % 2 !== 0) {
+    const q = Math.trunc(x * f);
+    return (q % 2 === 0 ? q : q + Math.sign(x)) / f;
+  }
+  return Number(x.toFixed(p)) + 0;
+};
 // Usable as function and as filter: max(a, b), [a, b] | max, x | round(1).
 const TPL_FUNCS = {
   float: (v, fallback) => tplToNumber(v, fallback),
   int: (v, fallback) => Math.trunc(tplToNumber(v, fallback)),
   abs: v => Math.abs(tplNum(v)),
-  round: (v, p = 0) => {
-    const f = 10 ** tplNum(p);
+  // As in Home Assistant: round(precision, method) with the methods common (default), ceil, floor
+  // and half (steps of 0.5); any other method counts as common.
+  round: (v, p = 0, method = 'common') => {
     const x = tplNum(v);
-    return Math.sign(x) * Math.round(Math.abs(x) * f) / f;
+    const f = 10 ** tplNum(p);
+    if (method === 'ceil') return Math.ceil(x * f) / f;
+    if (method === 'floor') return Math.floor(x * f) / f;
+    if (method === 'half') return tplRoundEven(x * 2) / 2;
+    return tplRound(x, tplNum(p));
   },
   max: tplExtreme('max', Math.max),
   min: tplExtreme('min', Math.min),
@@ -361,7 +387,22 @@ function compileTemplate(src) {
   const pow = binary(unary, ['**'], tplArith);
   const mul = binary(pow, ['*', '/', '//', '%'], tplArith);
   const add = binary(mul, ['+', '-'], tplArith);
-  const cmp = binary(add, ['==', '!=', '<', '<=', '>', '>='], tplCompare);
+  // As in Jinja2, comparisons chain: a < b < c means a < b and b < c, with b evaluated once.
+  const cmp = () => {
+    const first = add();
+    const rest = [];
+    while (isOp('==', '!=', '<', '<=', '>', '>=')) rest.push([toks[i++].v, add()]);
+    if (!rest.length) return first;
+    return env => {
+      let l = first(env);
+      for (const [op, next] of rest) {
+        const r = next(env);
+        if (!tplCompare(op, l, r)) return false;
+        l = r;
+      }
+      return true;
+    };
+  };
   const not = () => {
     if (!is('name', 'not')) return cmp();
     i++;
@@ -467,6 +508,8 @@ function buildCycles(cfg, lastDay) {
 
 const wsCache = new Map();
 const WS_CACHE_MAX = 80;
+// Units Home Assistant refused as a conversion target ("unit class|unit"): they are only a label.
+const labelOnlyUnits = new Set();
 
 function cachedWS(hass, msg, ttl) {
   const key = JSON.stringify(msg);
@@ -493,8 +536,8 @@ const aggValue = (a, type) => {
 
 // Turns the raw rows of every cycle into bucket values, totals and coverage. Each year counts its own
 // range up to `until`: the current year up to today or yesterday, previous years up to their last day.
-function processData(cfg, cycles, results, zone, type) {
-  const group = cfg.group_by;
+// `group` is the bar size that is drawn, `today` the running day, which never counts as missing.
+function processData(cfg, cycles, results, zone, type, group = cfg.group_by, today = null) {
   const hourly = group === 'hour';
   const errors = new Map();
   const fail = (s, err) => { if (!errors.has(s.name)) errors.set(s.name, err?.message || String(err)); };
@@ -544,6 +587,10 @@ function processData(cfg, cycles, results, zone, type) {
     const raw = cfg.series.map(s => {
       const rows = new Map();
       for (const id of s.statistics) {
+        // Two rows of one statistic can share a slot: the hour that repeats when the clocks go back.
+        // They are combined by type first (added up for meters, otherwise mean, minimum or maximum);
+        // only then the statistics of the series are added up.
+        const stat = new Map();
         for (const r of res[id] || []) {
           const ms = rowStart(r);
           const v = r[type];
@@ -553,8 +600,10 @@ function processData(cfg, cycles, results, zone, type) {
           const pos = dayPos(dt, cy.start.y);
           const rk = hourly ? pos * 24 + p.h : pos;
           if (!at.has(rk)) at.set(rk, { b: bucketOf(dt, p.h, cy), pos, day: bucketOf(dt, 0, cy) });
-          rows.set(rk, (rows.get(rk) ?? 0) + Number(v));
+          if (!stat.has(rk)) stat.set(rk, newAgg());
+          addAgg(stat.get(rk), Number(v));
         }
+        for (const [rk, a] of stat) rows.set(rk, (rows.get(rk) ?? 0) + aggValue(a, type));
       }
       return rows;
     });
@@ -582,6 +631,13 @@ function processData(cfg, cycles, results, zone, type) {
       if (!seen.has(x.day)) seen.set(x.day, new Set());
       seen.get(x.day).add(x.pos);
     }
+    // The running day never counts as missing: Home Assistant writes its first hour of statistics only
+    // after 01:00, and a gap that begins today shows up tomorrow.
+    if (cy.k === 0 && today && cmpDate(cy.until, today) === 0) {
+      const key = bucketOf(today, 0, cy);
+      if (!seen.has(key)) seen.set(key, new Set());
+      seen.get(key).add(dayPos(today, cy.start.y));
+    }
     cy.partial = new Set();
     let covered = 0;
     for (const [key, days] of cy.expected) {
@@ -605,7 +661,7 @@ function processData(cfg, cycles, results, zone, type) {
     for (const cy of cycles) cy.partialSlots = cy.partial;
   }
 
-  return { cycles, slots, type, errors: [...errors] };
+  return { cycles, slots, type, group, errors: [...errors] };
 }
 
 // ---------- formatting ----------
@@ -643,20 +699,26 @@ function barPath(x, w, y0, y1, roundTop, roundBottom) {
     + `Q${f(x)},${f(y1)} ${f(x)},${f(y1 - b)}Z`;
 }
 
-// Stacked segments of one bar without gaps. With `overlap` each segment reaches that far under
-// the next one (drawn later), so no anti-aliasing seam shows between opaque segments.
+// Value of a series as the chart draws it: below_zero flips the sign, so its positive values hang
+// below the zero line. A missing value counts as 0.
+const signedValue = (s, v) => (s.below_zero ? -(v ?? 0) : v ?? 0);
+
+// Stacked segments of one bar without gaps: positive values rise from the zero line, negative ones
+// hang below it, each in series order. With `overlap` each segment reaches that far under the next
+// one (drawn later), so no anti-aliasing seam shows between opaque segments.
 function stackPaths(values, series, x, w, y, overlap = 0) {
   const out = [];
   const y0 = y(0);
-  const up = series.map((s, i) => i).filter(i => !series[i].below_zero && values[i] > 0);
-  const down = series.map((s, i) => i).filter(i => series[i].below_zero && values[i] > 0);
+  const signed = values.map((v, i) => signedValue(series[i], v));
+  const up = signed.map((v, i) => i).filter(i => signed[i] > 0);
+  const down = signed.map((v, i) => i).filter(i => signed[i] < 0);
   let acc = 0;
   let prevTop = y0;
   up.forEach((i, n) => {
     const last = n === up.length - 1;
-    const top = y(acc + values[i]);
+    const top = y(acc + signed[i]);
     const bottom = n ? prevTop : y0;
-    acc += values[i];
+    acc += signed[i];
     prevTop = top;
     out.push({ i, d: barPath(x, w, last ? top : top - overlap, bottom, last, false) });
   });
@@ -664,13 +726,21 @@ function stackPaths(values, series, x, w, y, overlap = 0) {
   let prevBottom = y0;
   down.forEach((i, n) => {
     const last = n === down.length - 1;
-    const bottom = y(-(acc + values[i]));
+    const bottom = y(acc + signed[i]);
     const top = n ? prevBottom : y0;
-    acc += values[i];
+    acc += signed[i];
     prevBottom = bottom;
     out.push({ i, d: barPath(x, w, top, last ? bottom : bottom + overlap, false, last) });
   });
   return out.filter(p => p.d);
+}
+
+// Top edge of the tooltip, measured from the top of the card: below the pointer in the upper third
+// of the plot, level with it in the middle third, above it in the lower third. It never leaves the card.
+function tipTop(y, height, plotTop, plotHeight, cardHeight) {
+  const rel = (y - plotTop) / plotHeight;
+  const top = rel < 1 / 3 ? y + 14 : rel < 2 / 3 ? y - height / 2 : y - height - 14;
+  return Math.round(Math.max(4, Math.min(top, cardHeight - height - 4)));
 }
 
 function niceStep(v) {
@@ -879,11 +949,15 @@ class HaComparisonCard extends HTMLElement {
       const metaById = new Map((meta || []).map(m => [m.statistic_id, m]));
       const first = metaById.get(ids.find(id => metaById.has(id)));
       const type = c.stat_type !== 'auto' ? c.stat_type : first?.has_sum ? 'change' : 'mean';
-      const unit = c.unit ?? first?.display_unit_of_measurement ?? first?.statistics_unit_of_measurement ?? '';
-      const units = first?.unit_class && unit ? { [first.unit_class]: unit } : undefined;
-      const period = c.group_by === 'hour' ? 'hour' : 'day';
+      const ownUnit = first?.display_unit_of_measurement ?? first?.statistics_unit_of_measurement ?? '';
+      const unit = c.unit ?? ownUnit;
+      const unitClass = first?.unit_class;
+      // Hourly bars are meant for short ranges; a longer one is drawn in days, with a note below the chart.
+      const rangeDays = Math.max(...cycles.map(cy => daysBetween(cy.start, cy.end) + 1));
+      const group = c.group_by === 'hour' && rangeDays > HOUR_MAX_DAYS ? 'day' : c.group_by;
+      const period = group === 'hour' ? 'hour' : 'day';
 
-      const results = await Promise.all(cycles.map(cy => {
+      const fetchAll = target => Promise.all(cycles.map(cy => {
         const end = cy.k === 0 ? cy.until : cy.end;
         const msg = {
           type: 'recorder/statistics_during_period',
@@ -892,13 +966,25 @@ class HaComparisonCard extends HTMLElement {
           statistic_ids: ids,
           period,
           types: [type],
-          ...(units ? { units } : {}),
+          ...(unitClass && target ? { units: { [unitClass]: target } } : {}),
         };
         return cachedWS(hass, msg, cy.k === 0 ? CURRENT_TTL : Infinity);
       }));
+      // `unit` converts within the unit class where Home Assistant can (Wh, kWh, MWh ...). The recorder
+      // refuses any other text as a target: it is then only a label and the values keep their own unit.
+      const unitKey = `${unitClass}|${unit}`;
+      const convert = unit !== ownUnit && !labelOnlyUnits.has(unitKey);
+      let results;
+      try {
+        results = await fetchAll(convert ? unit : ownUnit);
+      } catch (err) {
+        if (!convert || err?.code !== 'invalid_format') throw err;
+        results = await fetchAll(ownUnit);
+        labelOnlyUnits.add(unitKey);
+      }
       if (this._loadToken !== token) return;
 
-      this._data = processData(c, cycles, results, zone, type);
+      this._data = processData(c, cycles, results, zone, type, group, today);
       this._data.unit = unit;
       this._data.missing = ids.filter(id => !metaById.has(id));
       const todayStart = zone.midnight(today);
@@ -1066,14 +1152,18 @@ class HaComparisonCard extends HTMLElement {
         const vals = valuesAt(cy, slot.key);
         let up = 0;
         let down = 0;
-        vals.forEach((v, i) => { if (v > 0) { if (c.series[i].below_zero) down += v; else up += v; } });
+        vals.forEach((v, i) => {
+          const s = signedValue(c.series[i], v);
+          if (s > 0) up += s; else if (s < 0) down -= s;
+        });
         maxUp = Math.max(maxUp, up);
         maxDown = Math.max(maxDown, down);
       }
     }
     if (!maxUp && !maxDown) maxUp = 1;
     const step = niceStep((maxUp + maxDown) / 5);
-    const top = maxUp * 1.06;
+    // With negative values only, some room above the zero line keeps its label clear of the unit.
+    const top = maxUp ? maxUp * 1.06 : maxDown * 0.1;
     const bottom = maxDown ? maxDown * 1.08 : 0;
     const ticks = [];
     for (let t = -Math.floor(bottom / step) * step; t <= top + 1e-9; t += step) ticks.push(Math.abs(t) < 1e-9 ? 0 : t);
@@ -1120,7 +1210,7 @@ class HaComparisonCard extends HTMLElement {
         [...vis].reverse().forEach((cy, j) => {
           const vals = valuesAt(cy, slot.key);
           if (vals.every(v => v == null)) return;
-          for (const p of stackPaths(vals.map(v => Math.max(0, v ?? 0)), c.series, g0 + j * (bw + SIDE_GAP), bw, y, 0.75)) {
+          for (const p of stackPaths(vals, c.series, g0 + j * (bw + SIDE_GAP), bw, y, 0.75)) {
             bars += `<path d="${p.d}" style="fill: ${escapeHtml(colors[p.i])}"></path>`;
           }
         });
@@ -1133,12 +1223,12 @@ class HaComparisonCard extends HTMLElement {
         const vals = valuesAt(ghosts[r], slot.key);
         if (vals.every(v => v == null)) continue;
         const op = ghostOpacity(c, ghosts[r].k);
-        for (const p of stackPaths(vals.map(v => Math.max(0, v ?? 0)), c.series, x0 + off * (r + 1), bw, y)) {
+        for (const p of stackPaths(vals, c.series, x0 + off * (r + 1), bw, y)) {
           bars += `<path d="${p.d}" style="fill: ${escapeHtml(colors[p.i])}; fill-opacity: ${op}"></path>`;
         }
       }
       const cur = valuesAt(vis[0], slot.key);
-      for (const p of stackPaths(cur.map(v => Math.max(0, v ?? 0)), c.series, x0, bw, y, 0.75)) {
+      for (const p of stackPaths(cur, c.series, x0, bw, y, 0.75)) {
         bars += `<path d="${p.d}" style="fill: ${escapeHtml(colors[p.i])}"></path>`;
       }
     });
@@ -1165,7 +1255,7 @@ class HaComparisonCard extends HTMLElement {
   // Axis labels, thinned so they do not overlap.
   _axisLabels(pw) {
     const f = this._formatters();
-    const group = this._config.group_by;
+    const group = this._data.group;
     const slots = this._data.slots;
     const n = slots.length;
     const sw = pw / Math.max(1, n);
@@ -1205,7 +1295,7 @@ class HaComparisonCard extends HTMLElement {
 
   _slotLabel(slot) {
     const f = this._formatters();
-    const group = this._config.group_by;
+    const group = this._data.group;
     if (group === 'month') return f.monthLong.format(new Date(Date.UTC(2000, slot.dt.m - 1, 15)));
     const day = f.dayMonth.format(new Date(utcOf(slot.dt)));
     return group === 'hour' ? `${day}, ${pad2(slot.h)}:00` : day;
@@ -1220,7 +1310,7 @@ class HaComparisonCard extends HTMLElement {
     const f = this._formatters();
     const vis = this._visible();
     const hl = this._els.svg.querySelector('.hl-slot');
-    const { ML, sw } = this._geo;
+    const { ML, sw, MT, ph } = this._geo;
     hl.setAttribute('x', ML + sw * i);
     hl.setAttribute('width', Math.max(sw, 1));
     hl.setAttribute('visibility', 'visible');
@@ -1241,11 +1331,12 @@ class HaComparisonCard extends HTMLElement {
     tip.innerHTML = h;
     tip.hidden = false;
     const card = this._els.card.getBoundingClientRect();
+    const plotTop = this._els.svg.getBoundingClientRect().top - card.top + MT;
     const w = tip.offsetWidth;
     let left = ev.clientX - card.left + 14;
     if (left + w > card.width - 8) left = ev.clientX - card.left - w - 14;
     tip.style.left = `${Math.max(8, left)}px`;
-    tip.style.top = `${ev.clientY - card.top + 14}px`;
+    tip.style.top = `${tipTop(ev.clientY - card.top, tip.offsetHeight, plotTop, ph, card.height)}px`;
   }
 
   _hideTip() {
@@ -1298,8 +1389,10 @@ class HaComparisonCard extends HTMLElement {
   _renderNote() {
     const d = this._data;
     const vis = this._visible();
-    const notes = vis.filter(cy => !cy.complete)
-      .map(cy => `* ${cy.label}: data for ${cy.coveredDays} of ${cy.expectedDays} days`);
+    const notes = [];
+    if (d.group !== this._config.group_by) notes.push(`Showing days: hourly bars need a range of ${HOUR_MAX_DAYS} days or less`);
+    notes.push(...vis.filter(cy => !cy.complete)
+      .map(cy => `* ${cy.label}: data for ${cy.coveredDays} of ${cy.expectedDays} days`));
     if (d.missing.length) notes.push(`No long-term statistics for ${d.missing.join(', ')}`);
     for (const [name, msg] of d.errors) notes.push(`${name}: ${msg}`);
     this._els.note.textContent = notes.join(' \u00b7 ');
@@ -1463,8 +1556,9 @@ const LABELS = {
 const HELPERS = {
   start: 'Empty = 01-01',
   end: 'Empty = today, including the running day. "yesterday" = whole days only. A last day before the first day spans the turn of the year.',
+  group_by: `Hour is meant for ranges of up to ${HOUR_MAX_DAYS} days, a longer range is drawn per day`,
   stat_type: 'Auto: change for meters, mean otherwise',
-  unit: 'Empty = unit of the statistic',
+  unit: 'Empty = unit of the statistic. A unit of the same kind is converted (Wh, kWh, MWh ...), any other text is only a label',
   decimals: 'Empty = automatic',
 };
 
